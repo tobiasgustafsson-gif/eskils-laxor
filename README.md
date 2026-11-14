@@ -11,7 +11,7 @@ Statisk sida (ingen byggprocess) + Supabase-projektet `eskils-laxor` (bkygxygoll
 
 ## Principer
 - Fokus på inlärning. Ingen konfetti, inga poängserier. Tydlig återkoppling och status.
-- Repetition över dagar: rätt första försöket för dagen flyttar upp en låda (intervall 0, 1, 2, 4, 7, 14, 30 dagar). Fel tar ner till låda 0. "Kan" = låda 3, alltså rätt på minst tre olika dagar.
+- Status: första svaret per moment och övningstillfälle räknas. Rätt i rad ökar, fel nollställer. "Kan" = tre rätt i rad. Svårigheten stegras med räknaren (välja, känna igen, skriva). Appen planerar inte vilken dag något ska övas; det gör familjen.
 - Svårighet stegras med lådan: välja → lyssna/känna igen → skriva själv. Förhör följer provets form.
 - Papper: utskrift av övningsblad och facit, rättning förs in i appen.
 - Översikt för vuxna: svar och minuter per dag, läget per läxa, svåraste momenten.

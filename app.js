@@ -99,29 +99,18 @@ async function flush(keepalive) {
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flush(true); });
 window.addEventListener('online', () => flush());
 
-/* ================= repetition över dagar ================= */
-// Låda 0 = nytt eller fel. Rätt första försöket för dagen flyttar upp en låda. Fel tar ner till låda 0.
-// "Kan" = låda 3 eller högre, vilket kräver rätt på minst tre olika dagar.
-const INTERVALL = [0, 1, 2, 4, 7, 14, 30];
+/* ================= status ================= */
+// Status bygger på första svaret per moment och övningstillfälle. Rätt ökar en räknare, fel nollställer den.
+// Räknaren styr svårigheten: 0 = välja eller peka, 1 = lyssna eller känna igen, 2+ = skriva själv.
+// "Kan" = tre rätt i rad. Ingen plan för vilken dag något ska övas; det bestämmer familjen.
 const KAN = 3;
 function nivå(item) { const s = S.status[item]; if (!s) return 'ej'; return s.box >= KAN ? 'kan' : 'lar'; }
-function behovs(item, dag = idag()) { const s = S.status[item]; return !!s && s.due && s.due <= dag && s.box < INTERVALL.length; }
-function registrera(item, laxa, ratt, kalla, lage, sekunder) {
+function registrera(item, laxa, ratt, kalla, lage, sekunder, räknas = true) {
   const dag = idag(), nu = new Date().toISOString();
-  const s = { ...(S.status[item] || { item, box: 0, due: dag, ratt: 0, fel: 0 }) };
-  const förstIdag = s.senast_dag !== dag;
+  const s = { ...(S.status[item] || { item, box: 0, due: null, ratt: 0, fel: 0 }) };
   if (ratt) s.ratt++; else s.fel++;
-  if (förstIdag) {
-    if (ratt) { s.box = Math.min(s.box + 1, INTERVALL.length - 1); s.due = plusDagar(dag, INTERVALL[s.box]); }
-    else { s.box = 0; s.due = dag; }
-  } else if (ratt && s.due <= dag) {
-    // rättat senare samma dag: tillbaka i morgon, ingen ny låda
-    s.due = plusDagar(dag, 1);
-  } else if (!ratt && s.box > 0 && s.due > dag) {
-    // fel senare samma dag efter ett rätt: tillbaka till repetition i morgon
-    s.box = Math.max(s.box - 1, 0); s.due = plusDagar(dag, 1);
-  }
-  s.senast = nu; s.senast_dag = dag;
+  if (räknas) s.box = ratt ? Math.min(s.box + 1, 9) : 0;
+  s.due = null; s.senast = nu; s.senast_dag = dag;
   S.status[item] = s; ko.status[item] = s;
   ko.forsok.push({ id: uuid(), ts: nu, item, laxa, ratt, kalla, lage, sekunder: Math.max(0, Math.min(600, Math.round(sekunder || 0))) });
   const rad = S.dagar.find(r => r.dag === dag && r.laxa === laxa && r.kalla === kalla);
@@ -197,10 +186,11 @@ function grupper(l, sp) {
   return [];
 }
 function räkna(items) {
-  const r = { kan: 0, lar: 0, ej: 0, idag: 0, n: items.length };
-  items.forEach(m => { r[nivå(m.id)]++; if (behovs(m.id)) r.idag++; });
+  const r = { kan: 0, lar: 0, ej: 0, senast: null, n: items.length };
+  items.forEach(m => { r[nivå(m.id)]++; const s = S.status[m.id]; if (s && s.senast_dag && (!r.senast || s.senast_dag > r.senast)) r.senast = s.senast_dag; });
   return r;
 }
+const senastText = r => r.senast ? `övat senast ${r.senast === idag() ? 'i dag' : veckodag(r.senast)}` : 'inte övat än';
 function segHtml(r) { if (!r.n) return ''; return `<div class="seg"><i class="k" style="width:${r.kan / r.n * 100}%"></i><i class="l" style="width:${r.lar / r.n * 100}%"></i></div>`; }
 const LEGEND = `<div class="legend"><span style="--c:var(--kan)">Kan</span><span style="--c:var(--lar)">Lär sig</span><span style="--c:var(--ej)">Inte börjat</span></div>`;
 
@@ -314,7 +304,7 @@ function kort(l) {
   let extra = '';
   if (öva && (l.typ !== 'karta' || EUROPA)) {
     const sp = spår(l).find(s => s.huvud), r = räkna(moment(l, sp.id));
-    extra = `<small>Kan ${r.kan} av ${r.n}${r.idag ? ` · <b style="display:inline;font-size:inherit;color:#1f56a8">${r.idag} att repetera i dag</b>` : ''}</small>${segHtml(r)}`;
+    extra = `<small>Kan ${r.kan} av ${r.n} · ${senastText(r)}</small>${segHtml(r)}`;
   }
   return `<div class="card${klar ? ' klar' : ''}"><button class="main${öva ? '' : ' static'}" ${öva ? `data-open="${l.id}"` : ''}>
     <span class="ic">${l.ikon || '📘'}</span><span class="t"><span class="amne">${esc(l.ämne)}</span><b>${esc(l.titel)}</b>
@@ -327,20 +317,19 @@ function vyLaxa(id) {
   if (l.typ === 'karta' && !EUROPA) { $app.innerHTML = '<div class="page"><p class="sub">Laddar kartan…</p></div>'; return laddaEuropa().then(() => vyLaxa(id)); }
   document.title = l.titel;
   const delar = spår(l).map(sp => {
-    const m = moment(l, sp.id), r = räkna(m), nya = m.filter(x => !S.status[x.id]).length;
-    const dagens = r.idag + Math.min(nya, NYA_PER_PASS);
-    return `<h2>${esc(sp.namn)}</h2><p class="sub">Kan ${r.kan} av ${r.n} · lär sig ${r.lar} · inte börjat ${r.ej}</p>${segHtml(r)}
-      <button class="btn primary" data-play="ova" data-sp="${sp.id}" ${dagens ? '' : 'disabled'}>Dagens övning<small>${dagens ? `${r.idag} att repetera${nya ? ` och ${Math.min(nya, NYA_PER_PASS)} nya` : ''}` : 'Klart för i dag. Kom tillbaka i morgon.'}</small></button>
-      <details><summary class="link">Öva en del extra</summary>${grupper(l, sp.id).map(g => { const mm = m.filter(x => x.grupp === g.id); if (!mm.length) return ''; const rr = räkna(mm);
+    const m = moment(l, sp.id), r = räkna(m), kvar = r.n - r.kan;
+    return `<h2>${esc(sp.namn)}</h2><p class="sub">Kan ${r.kan} av ${r.n} · lär sig ${r.lar} · inte börjat ${r.ej} · ${senastText(r)}</p>${segHtml(r)}
+      <button class="btn primary" data-play="ova" data-sp="${sp.id}">Öva det du inte kan än<small>${kvar ? `${kvar} st, i blandad ordning` : 'Du kan allt. Öva allt igen.'}</small></button>
+      <h3>Öva en del</h3>${grupper(l, sp.id).map(g => { const mm = m.filter(x => x.grupp === g.id); if (!mm.length) return ''; const rr = räkna(mm);
         return `<button class="btn" data-play="extra" data-sp="${sp.id}" data-g="${esc(g.id)}">${esc(g.namn)}<span class="cnt">kan ${rr.kan}/${rr.n}</span>${segHtml(rr)}</button>`; }).join('')}
-        <button class="btn" data-play="extra" data-sp="${sp.id}" data-g="*">Allt<span class="cnt">kan ${r.kan}/${r.n}</span></button></details>
+      <button class="btn" data-play="extra" data-sp="${sp.id}" data-g="*">Allt<span class="cnt">${r.n} st</span></button>
       <div class="grid2"><button class="btn" data-play="forhor" data-sp="${sp.id}">📝 Förhör<small>Allt en gång, som på provet</small></button>
       <button class="btn" data-papper="${sp.id}">✏️ Papper<small>Skriv ut och rätta</small></button></div>`;
   }).join('');
   $app.innerHTML = `<div class="page"><button class="back" id="tillbaka">← Alla läxor</button><div class="amne" style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">${esc(l.ämne)} · vecka ${l.vecka}</div>
     <h1>${esc(l.titel)}</h1>${l.datumText ? `<span class="tag">${esc(l.datumText)}</span>` : ''}${LEGEND}${delar}
     ${l.typ === 'glosor' ? `<button class="btn" id="lista">📖 Ordlistan<small>Läs och lyssna på alla ord</small></button>` : ''}
-    <p class="hint">Ett ord eller land räknas som <b>kan</b> när du svarat rätt på tre olika dagar. Fel gör att det kommer tillbaka.</p>${syncRad()}</div>`;
+    <p class="hint">Något räknas som <b>kan</b> när du svarat rätt tre gånger i rad, sista gången genom att skriva det själv. Du kan sluta när du vill, allt sparas.</p>${syncRad()}</div>`;
   document.getElementById('tillbaka').onclick = () => location.hash = '';
   $app.querySelectorAll('[data-play]').forEach(b => b.onclick = () => starta(l, b.dataset.sp, b.dataset.play, b.dataset.g));
   $app.querySelectorAll('[data-papper]').forEach(b => b.onclick = () => vyPapper(l, b.dataset.papper));
@@ -356,14 +345,12 @@ function vyOrdlista(l) {
 }
 
 /* ================= övning ================= */
-const NYA_PER_PASS = 8, MAX_PASS = 20;
 let P = null; // aktuellt pass
 function starta(l, sp, läge, grupp) {
   let m = moment(l, sp);
   if (läge === 'ova') {
-    const dag = idag(); const rep = shuffle(m.filter(x => behovs(x.id, dag)));
-    const nya = shuffle(m.filter(x => !S.status[x.id])).slice(0, NYA_PER_PASS);
-    m = [...rep, ...nya].slice(0, MAX_PASS);
+    const ejKan = m.filter(x => nivå(x.id) !== 'kan');
+    m = shuffle(ejKan.length ? ejKan : m);
   } else if (läge === 'extra') { m = shuffle(grupp === '*' ? m : m.filter(x => x.grupp === grupp)); }
   else m = shuffle(m);
   if (!m.length) return vyLaxa(l.id);
@@ -391,7 +378,7 @@ function nästa() {
 function sekunder() { return Math.min(60, (performance.now() - P.t0) / 1000); }
 function svar(ratt) {
   const x = P.x, först = !P.försökt.has(x.id);
-  if (först || P.läge !== 'forhor') registrera(x.id, P.l.id, ratt, 'app', P.typ, sekunder());
+  if (först || P.läge !== 'forhor') registrera(x.id, P.l.id, ratt, 'app', P.typ, sekunder(), först);
   P.t0 = performance.now();
   if (först) { P.försökt.add(x.id); if (ratt) P.förstRätt++; P.märk[x.id] = ratt ? 'mok' : 'mbad'; }
   if (!ratt) P.fel.add(x.id);
@@ -422,7 +409,7 @@ function frågaKarta(x) {
     karta.tryck(true);
     top.innerHTML = huvud() + `<p class="ask">Var ligger</p><div class="big">${esc(c.sv)}?</div>`;
     bot.innerHTML = `${P.läge === 'forhor' ? '' : fakta}<p class="hint">Tryck på landet. Nyp för att zooma.</p><div class="fb" id="fb"></div>`;
-    if (!karta.synlig(x.i) || P.läge === 'ova') karta.gåTill(karta.hem);
+    if (!karta.synlig(x.i) || P.läge !== 'extra') karta.gåTill(karta.hem);
   } else {
     karta.tryck(false); karta.kl(x.i, 'target');
     if (x.typ === 'stad') karta.stad(x.i);
@@ -525,13 +512,14 @@ function skrivGlosa(v) {
 function klart() {
   stängKarta(); const l = P.l, sp = P.sp, m = moment(l, sp), r = räkna(m), unika = new Set(P.alla).size;
   const felLista = [...P.fel].map(id => m.find(x => x.id === id)).filter(Boolean);
-  const rubrik = P.läge === 'forhor' ? `${P.förstRätt} av ${unika} rätt` : 'Klart för den här gången';
+  const rubrik = P.läge === 'forhor' ? `${P.förstRätt} av ${unika} rätt` : 'Klart';
   $app.innerHTML = `<div class="page"><h1>${rubrik}</h1><p class="sub">${P.läge === 'forhor' ? 'Bara första försöket räknas.' : `${P.förstRätt} av ${unika} rätt på första försöket.`}</p>
-    <p class="sub" style="margin-bottom:0">${esc(spår(l).find(s => s.id === sp).namn)}: kan ${r.kan} av ${r.n}${r.idag ? `, ${r.idag} kvar att repetera i dag` : ''}</p>${segHtml(r)}${LEGEND}
+    <p class="sub" style="margin-bottom:0">${esc(spår(l).find(s => s.id === sp).namn)}: kan ${r.kan} av ${r.n}</p>${segHtml(r)}${LEGEND}
     ${felLista.length ? `<h3>Öva lite extra på</h3><table class="list">${felLista.map(x => `<tr><td>${esc(x.namn)}</td></tr>`).join('')}</table>` : ''}
-    <button class="btn primary" id="igen">${P.läge === 'ova' && r.idag ? 'Fortsätt öva' : 'Tillbaka'}</button>${syncRad()}</div>`;
-  const igen = P.läge === 'ova' && r.idag; const sparad = { l, sp, läge: P.läge, grupp: P.grupp }; P = null;
-  document.getElementById('igen').onclick = () => igen ? starta(sparad.l, sparad.sp, 'ova') : vyLaxa(l.id);
+    <button class="btn primary" id="igen">Öva igen</button><button class="btn" id="tillbaka">Tillbaka</button>${syncRad()}</div>`;
+  const sparad = { l, sp, läge: P.läge, grupp: P.grupp }; P = null;
+  document.getElementById('igen').onclick = () => starta(sparad.l, sparad.sp, sparad.läge, sparad.grupp);
+  document.getElementById('tillbaka').onclick = () => vyLaxa(l.id);
   flush();
 }
 
@@ -591,7 +579,7 @@ async function vyOversikt() {
   $app.innerHTML = `<div class="page"><button class="back" id="tillbaka">← Alla läxor</button><h1>Översikt</h1>
     <p class="sub">Senaste två veckorna. Minuter räknas från tiden per svar, högst en minut per svar.</p>
     <table class="list"><tr><th>Dag</th><th>Svar i appen</th><th>Min</th><th>På papper</th></tr>${rader.reverse().map(r => `<tr><td>${veckodag(r.d)}</td><td><div style="display:flex;align-items:center;gap:6px"><span style="display:inline-block;height:8px;border-radius:4px;background:var(--accent);width:${(r.app / maxA) * 100}px"></span>${r.app || ''}</div></td><td>${r.min || ''}</td><td>${r.papper || ''}</td></tr>`).join('')}</table>
-    <h2>Läget per läxa</h2>${LEGEND}${läxor.map(l => spår(l).map(sp => { const r = räkna(moment(l, sp.id)); return `<p style="margin:12px 0 0"><b>${esc(l.titel)}</b>${spår(l).length > 1 ? `, ${esc(sp.namn.toLowerCase())}` : ''} <span class="sub">v. ${l.vecka}</span><br><span class="sub">Kan ${r.kan} · lär sig ${r.lar} · inte börjat ${r.ej}${r.idag ? ` · ${r.idag} att repetera i dag` : ''}</span></p>${segHtml(r)}`; }).join('')).join('')}
+    <h2>Läget per läxa</h2>${LEGEND}${läxor.map(l => spår(l).map(sp => { const r = räkna(moment(l, sp.id)); return `<p style="margin:12px 0 0"><b>${esc(l.titel)}</b>${spår(l).length > 1 ? `, ${esc(sp.namn.toLowerCase())}` : ''} <span class="sub">v. ${l.vecka}</span><br><span class="sub">Kan ${r.kan} · lär sig ${r.lar} · inte börjat ${r.ej} · ${senastText(r)}</span></p>${segHtml(r)}`; }).join('')).join('')}
     ${svåra.length ? `<h2>Svårast just nu</h2><table class="list"><tr><th>Ord eller land</th><th>Rätt</th><th>Fel</th></tr>${svåra.map(o => `<tr><td>${esc(o.x.namn)}</td><td>${o.s.ratt}</td><td>${o.s.fel}</td></tr>`).join('')}</table>` : ''}
     <h2>Testa appen</h2><p class="sub">Prova allt som Eskil ser utan att det påverkar hans statistik eller framsteg.</p>
     <button class="btn" id="testknapp">${TEST ? 'Avsluta testläge' : 'Starta testläge'}</button>
