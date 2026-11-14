@@ -25,6 +25,19 @@ function lev(a, b) { const d = Array.from({ length: a.length + 1 }, (_, i) => [i
 })();
 const NYCKEL = ls.get('nyckel', null);
 
+/* ================= testläge ================= */
+// För vuxna som vill prova appen. Läser Eskils riktiga läge men sparar ingenting, varken i databasen eller i webbläsaren.
+(function () {
+  const p = new URLSearchParams(location.search);
+  try { if (p.get('test') === '1') sessionStorage.setItem('testläge', '1'); if (p.get('test') === '0') sessionStorage.removeItem('testläge'); } catch (e) { }
+})();
+const TEST = (() => { try { return sessionStorage.getItem('testläge') === '1'; } catch (e) { return false; } })();
+function sättTestläge(på) { try { på ? sessionStorage.setItem('testläge', '1') : sessionStorage.removeItem('testläge'); } catch (e) { } location.hash = ''; location.reload(); }
+if (TEST) {
+  document.body.insertAdjacentHTML('beforeend', '<div class="testbar">Testläge: inget sparas <button id="testav">Avsluta</button></div>');
+  document.getElementById('testav').onclick = () => sättTestläge(false);
+}
+
 /* ================= lagring och synk ================= */
 const S = {
   status: {},          // item -> {item, box, due, ratt, fel, senast, senast_dag}
@@ -33,7 +46,7 @@ const S = {
   online: null,        // true, false, eller null (okänt)
   felNyckel: false,
 };
-let ko = ls.get('ko', { forsok: [], status: {}, bockar: {} });
+let ko = TEST ? { forsok: [], status: {}, bockar: {} } : ls.get('ko', { forsok: [], status: {}, bockar: {} });
 const cache = ls.get('cache', null);
 if (cache) { S.status = cache.status || {}; S.bockar = cache.bockar || {}; S.dagar = cache.dagar || []; }
 applyKo();
@@ -51,7 +64,7 @@ function applyKo() {
   for (const k in ko.status) S.status[k] = ko.status[k];
   for (const k in ko.bockar) S.bockar[k] = ko.bockar[k];
 }
-function sparaCache() { ls.set('cache', { status: S.status, bockar: S.bockar, dagar: S.dagar }); }
+function sparaCache() { if (TEST) return; ls.set('cache', { status: S.status, bockar: S.bockar, dagar: S.dagar }); }
 async function hamta() {
   if (!NYCKEL) return;
   try {
@@ -64,7 +77,7 @@ async function hamta() {
 let flushTimer = null, flushing = false;
 function planeraFlush() { clearTimeout(flushTimer); flushTimer = setTimeout(flush, 1500); }
 async function flush(keepalive) {
-  if (!NYCKEL || flushing) return;
+  if (TEST || !NYCKEL || flushing) return;
   const f = ko.forsok, st = Object.values(ko.status), bo = ko.bockar;
   if (!f.length && !st.length && !Object.keys(bo).length) return;
   flushing = true;
@@ -114,9 +127,9 @@ function registrera(item, laxa, ratt, kalla, lage, sekunder) {
   const rad = S.dagar.find(r => r.dag === dag && r.laxa === laxa && r.kalla === kalla);
   if (rad) { rad.antal++; rad.sekunder += Math.round(sekunder || 0); if (ratt) rad.ratt++; }
   else S.dagar.push({ dag, laxa, kalla, antal: 1, sekunder: Math.round(sekunder || 0), ratt: ratt ? 1 : 0 });
-  ls.set('ko', ko); sparaCache(); planeraFlush();
+  if (!TEST) { ls.set('ko', ko); sparaCache(); planeraFlush(); }
 }
-function bocka(id, klar) { S.bockar[id] = klar; ko.bockar[id] = klar; ls.set('ko', ko); sparaCache(); planeraFlush(); }
+function bocka(id, klar) { S.bockar[id] = klar; ko.bockar[id] = klar; if (!TEST) { ls.set('ko', ko); sparaCache(); planeraFlush(); } }
 
 /* ================= innehåll ================= */
 const REGIONER = [
@@ -271,6 +284,7 @@ let karta = null;
 function stängKarta() { if (karta) { karta.stäng(); karta = null; } }
 function syncRad() {
   const v = ko.forsok.length;
+  if (TEST) return `<p class="sync">Testläge. Det du gör nu sparas inte och försvinner när du avslutar.</p>`;
   if (S.felNyckel) return `<p class="note warn">Länken har fel familjenyckel. Öppna appen via rätt länk.</p>`;
   if (S.online === false) return `<p class="sync">Offline. ${v ? v + ' svar sparas när nätet är tillbaka.' : ''}</p>`;
   return `<p class="sync">${v ? 'Sparar…' : 'Allt sparat.'}</p>`;
@@ -579,8 +593,11 @@ async function vyOversikt() {
     <table class="list"><tr><th>Dag</th><th>Svar i appen</th><th>Min</th><th>På papper</th></tr>${rader.reverse().map(r => `<tr><td>${veckodag(r.d)}</td><td><div style="display:flex;align-items:center;gap:6px"><span style="display:inline-block;height:8px;border-radius:4px;background:var(--accent);width:${(r.app / maxA) * 100}px"></span>${r.app || ''}</div></td><td>${r.min || ''}</td><td>${r.papper || ''}</td></tr>`).join('')}</table>
     <h2>Läget per läxa</h2>${LEGEND}${läxor.map(l => spår(l).map(sp => { const r = räkna(moment(l, sp.id)); return `<p style="margin:12px 0 0"><b>${esc(l.titel)}</b>${spår(l).length > 1 ? `, ${esc(sp.namn.toLowerCase())}` : ''} <span class="sub">v. ${l.vecka}</span><br><span class="sub">Kan ${r.kan} · lär sig ${r.lar} · inte börjat ${r.ej}${r.idag ? ` · ${r.idag} att repetera i dag` : ''}</span></p>${segHtml(r)}`; }).join('')).join('')}
     ${svåra.length ? `<h2>Svårast just nu</h2><table class="list"><tr><th>Ord eller land</th><th>Rätt</th><th>Fel</th></tr>${svåra.map(o => `<tr><td>${esc(o.x.namn)}</td><td>${o.s.ratt}</td><td>${o.s.fel}</td></tr>`).join('')}</table>` : ''}
+    <h2>Testa appen</h2><p class="sub">Prova allt som Eskil ser utan att det påverkar hans statistik eller framsteg.</p>
+    <button class="btn" id="testknapp">${TEST ? 'Avsluta testläge' : 'Starta testläge'}</button>
     ${syncRad()}</div>`;
   document.getElementById('tillbaka').onclick = () => location.hash = '';
+  document.getElementById('testknapp').onclick = () => sättTestläge(!TEST);
 }
 
 /* ================= start ================= */
