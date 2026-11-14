@@ -135,3 +135,12 @@ table.list th{color:var(--muted);font-weight:600;font-size:13px}
 .testbar{white-space:nowrap;position:fixed;left:50%;transform:translateX(-50%);bottom:calc(10px + env(safe-area-inset-bottom));z-index:20;background:#7a4d00;color:#fff;border-radius:999px;padding:6px 6px 6px 14px;font-size:14px;display:flex;align-items:center;gap:8px;box-shadow:0 2px 8px #0003}
 .testbar button{border:0;background:#fff;color:#7a4d00;border-radius:999px;padding:5px 12px;font-size:13px;font-weight:600;cursor:pointer}
 @media print{.testbar{display:none}}
+
+.delar{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+.del{border:1px solid var(--line);background:#fff;border-radius:999px;padding:7px 12px;font-size:14px;cursor:pointer}
+.del.on{background:var(--ok);border-color:var(--ok);color:#fff}
+.loggrad{display:flex;align-items:center;gap:8px;margin:-6px 4px 0;font-size:13px;color:var(--muted)}
+.loggrad span{flex:1}
+.loggrad .link{font-size:14px;padding:6px 0}
+.loggform{background:#fff;border:1px solid var(--line);border-radius:14px;padding:12px;margin:6px 0 4px}
+input.txt{width:100%;font-size:16px;padding:10px 12px;border-radius:10px;border:1px solid #cfd6dc;margin-top:8px}

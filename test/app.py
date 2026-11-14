@@ -1,7 +1,7 @@
 import asyncio, json
 from playwright.async_api import async_playwright
 KEY='testnyckel'
-DB={'status':{},'forsok':{},'bockar':{}}
+DB={'status':{},'forsok':{},'bockar':{},'logg':{}}
 async def fake(route, req):
     fn=req.url.split('/rpc/')[1]; body=json.loads(req.post_data or '{}')
     if body.get('p_nyckel')!=KEY:
@@ -10,11 +10,13 @@ async def fake(route, req):
         dag={}
         for f in DB['forsok'].values():
             k=(f['ts'][:10],f['laxa'],f['kalla']); r=dag.setdefault(k,{'dag':k[0],'laxa':k[1],'kalla':k[2],'antal':0,'sekunder':0,'ratt':0}); r['antal']+=1; r['sekunder']+=f['sekunder']; r['ratt']+=f['ratt']
-        return await route.fulfill(status=200, content_type='application/json', body=json.dumps({'status':list(DB['status'].values()),'bockar':DB['bockar'],'dagar':list(dag.values())}))
+        return await route.fulfill(status=200, content_type='application/json', body=json.dumps({'status':list(DB['status'].values()),'bockar':DB['bockar'],'dagar':list(dag.values()),'logg':sorted(DB['logg'].values(),key=lambda x:x['ts'],reverse=True)}))
     if fn=='spara':
         for f in body['p_forsok']: DB['forsok'][f['id']]=f
         for s in body['p_status']: DB['status'][s['item']]=s
         return await route.fulfill(status=200, content_type='application/json', body='1')
+    if fn=='logga':
+        DB['logg'][body['p_id']]={'id':body['p_id'],'ts':body['p_ts'],'laxa':body['p_laxa'],'text':body['p_text'],'minuter':body['p_minuter']}; return await route.fulfill(status=204, body='')
     if fn=='bocka':
         DB['bockar'][body['p_laxa']]=body['p_klar']; return await route.fulfill(status=204, body='')
 NM='/home/claude/europa/node_modules/'

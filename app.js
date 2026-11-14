@@ -43,12 +43,14 @@ const S = {
   status: {},          // item -> {item, box, due, ratt, fel, senast, senast_dag}
   bockar: {},          // läx-id -> bool
   dagar: [],           // [{dag, laxa, kalla, antal, sekunder, ratt}]
+  logg: [],            // [{id, ts, laxa, text, minuter}] saker gjorda utanför appen
   online: null,        // true, false, eller null (okänt)
   felNyckel: false,
 };
-let ko = TEST ? { forsok: [], status: {}, bockar: {} } : ls.get('ko', { forsok: [], status: {}, bockar: {} });
+let ko = TEST ? { forsok: [], status: {}, bockar: {}, logg: [] } : ls.get('ko', { forsok: [], status: {}, bockar: {}, logg: [] });
+ko.logg = ko.logg || [];
 const cache = ls.get('cache', null);
-if (cache) { S.status = cache.status || {}; S.bockar = cache.bockar || {}; S.dagar = cache.dagar || []; }
+if (cache) { S.status = cache.status || {}; S.bockar = cache.bockar || {}; S.dagar = cache.dagar || []; S.logg = cache.logg || []; }
 applyKo();
 
 async function rpc(fn, args, keepalive) {
@@ -63,14 +65,15 @@ async function rpc(fn, args, keepalive) {
 function applyKo() {
   for (const k in ko.status) S.status[k] = ko.status[k];
   for (const k in ko.bockar) S.bockar[k] = ko.bockar[k];
+  const har = new Set(S.logg.map(x => x.id)); ko.logg.forEach(x => { if (!har.has(x.id)) S.logg.unshift(x); });
 }
-function sparaCache() { if (TEST) return; ls.set('cache', { status: S.status, bockar: S.bockar, dagar: S.dagar }); }
+function sparaCache() { if (TEST) return; ls.set('cache', { status: S.status, bockar: S.bockar, dagar: S.dagar, logg: S.logg }); }
 async function hamta() {
   if (!NYCKEL) return;
   try {
     const d = await rpc('hamta', {});
     S.status = {}; (d.status || []).forEach(r => S.status[r.item] = r);
-    S.bockar = d.bockar || {}; S.dagar = d.dagar || [];
+    S.bockar = d.bockar || {}; S.dagar = d.dagar || []; S.logg = d.logg || [];
     applyKo(); S.online = true; sparaCache();
   } catch (e) { if (e.felNyckel) S.felNyckel = true; S.online = false; }
 }
@@ -78,19 +81,21 @@ let flushTimer = null, flushing = false;
 function planeraFlush() { clearTimeout(flushTimer); flushTimer = setTimeout(flush, 1500); }
 async function flush(keepalive) {
   if (TEST || !NYCKEL || flushing) return;
-  const f = ko.forsok, st = Object.values(ko.status), bo = ko.bockar;
-  if (!f.length && !st.length && !Object.keys(bo).length) return;
+  const f = ko.forsok, st = Object.values(ko.status), bo = ko.bockar, lg = ko.logg;
+  if (!f.length && !st.length && !Object.keys(bo).length && !lg.length) return;
   flushing = true;
   try {
     for (const k in bo) await rpc('bocka', { p_laxa: k, p_klar: bo[k] }, keepalive);
-    for (let i = 0; i < Math.max(f.length, 1); i += 500) {
+    for (const x of lg) await rpc('logga', { p_id: x.id, p_ts: x.ts, p_laxa: x.laxa, p_text: x.text, p_minuter: x.minuter ?? null }, keepalive);
+    if (f.length || st.length) for (let i = 0; i < Math.max(f.length, 1); i += 500) {
       await rpc('spara', { p_forsok: f.slice(i, i + 500), p_status: i === 0 ? st : [] }, keepalive);
     }
     // töm bara det som skickades
     const skickade = new Set(f.map(x => x.id));
     ko = { forsok: ko.forsok.filter(x => !skickade.has(x.id)),
            status: Object.fromEntries(Object.entries(ko.status).filter(([k, v]) => !st.includes(v))),
-           bockar: Object.fromEntries(Object.entries(ko.bockar).filter(([k, v]) => bo[k] !== v)) };
+           bockar: Object.fromEntries(Object.entries(ko.bockar).filter(([k, v]) => bo[k] !== v)),
+           logg: ko.logg.filter(x => !lg.includes(x)) };
     ls.set('ko', ko); S.online = true;
     // lägg till försöken i dagssummeringen lokalt
   } catch (e) { S.online = false; if (e.felNyckel) S.felNyckel = true; }
@@ -118,6 +123,13 @@ function registrera(item, laxa, ratt, kalla, lage, sekunder, räknas = true) {
   else S.dagar.push({ dag, laxa, kalla, antal: 1, sekunder: Math.round(sekunder || 0), ratt: ratt ? 1 : 0 });
   if (!TEST) { ls.set('ko', ko); sparaCache(); planeraFlush(); }
 }
+function logga(laxa, text, minuter) {
+  const x = { id: uuid(), ts: new Date().toISOString(), laxa, text, minuter: minuter || null };
+  S.logg.unshift(x); ko.logg.push(x);
+  if (!TEST) { ls.set('ko', ko); sparaCache(); planeraFlush(); }
+}
+const dagAv = ts => idag(new Date(ts));
+const LOGGVAL = { uppgift: ['Läst', 'Svarat på frågor', 'Skrivit'], glosor: ['Skrivit glosorna', 'Förhört muntligt', 'Läst högt'], karta: ['Övat på papper', 'Förhört muntligt', 'Tittat i kartboken'] };
 function bocka(id, klar) { S.bockar[id] = klar; ko.bockar[id] = klar; if (!TEST) { ls.set('ko', ko); sparaCache(); planeraFlush(); } }
 
 /* ================= innehåll ================= */
@@ -273,7 +285,7 @@ class Karta {
 let karta = null;
 function stängKarta() { if (karta) { karta.stäng(); karta = null; } }
 function syncRad() {
-  const v = ko.forsok.length;
+  const v = ko.forsok.length + ko.logg.length;
   if (TEST) return `<p class="sync">Testläge. Det du gör nu sparas inte och försvinner när du avslutar.</p>`;
   if (S.felNyckel) return `<p class="note warn">Länken har fel familjenyckel. Öppna appen via rätt länk.</p>`;
   if (S.online === false) return `<p class="sync">Offline. ${v ? v + ' svar sparas när nätet är tillbaka.' : ''}</p>`;
@@ -292,24 +304,62 @@ function vyStart() {
     const n = v.läxor.filter(l => S.bockar[l.id]).length;
     return `<${stor ? 'h2' : 'h3'}>Vecka ${v.vecka}</${stor ? 'h2' : 'h3'}><p class="sub">${n} av ${v.läxor.length} klara</p>` + v.läxor.map(l => kort({ ...l, vecka: v.vecka })).join('');
   };
-  $app.innerHTML = `<div class="page"><h1>Eskils läxor</h1>${vecka(nu, true)}${kommande.map(v => vecka(v, true)).join('')}
+  const iDag = S.dagar.filter(x => x.dag === idag()), svar = iDag.filter(x => x.kalla === 'app').reduce((s, x) => s + x.antal, 0);
+  const loggIDag = S.logg.filter(x => dagAv(x.ts) === idag()).length;
+  const dagRad = svar || loggIDag ? `I dag: ${[svar ? `${svar} svar i appen` : '', loggIDag ? `${loggIDag} ${loggIDag === 1 ? 'sak' : 'saker'} gjorda utanför appen` : ''].filter(Boolean).join(' och ')}.` : 'Inget övat i dag än.';
+  $app.innerHTML = `<div class="page"><h1>Eskils läxor</h1><p class="note">${dagRad}</p>${vecka(nu, true)}${kommande.map(v => vecka(v, true)).join('')}
     ${äldre.length ? `<details><summary class="sub" style="cursor:pointer;margin-top:20px">Tidigare veckor (${äldre.length})</summary>${äldre.map(v => vecka(v, false)).join('')}</details>` : ''}
     <button class="link" id="oversikt">Översikt: hur mycket Eskil har övat</button>${syncRad()}</div>`;
   $app.querySelectorAll('[data-open]').forEach(b => b.onclick = () => location.hash = 'l/' + b.dataset.open);
   $app.querySelectorAll('[data-chk]').forEach(b => b.onclick = () => { bocka(b.dataset.chk, !S.bockar[b.dataset.chk]); vyStart(); });
+  $app.querySelectorAll('[data-logg]').forEach(b => b.onclick = () => öppnaLogg(b.dataset.logg));
+  $app.querySelectorAll('[data-del]').forEach(b => b.onclick = e => {
+    e.stopPropagation(); const k = b.dataset.del, id = k.split('#')[0], l = hittaLaxa(id);
+    bocka(k, !S.bockar[k]);
+    const alla = l.delar.every((d, i) => S.bockar[`${id}#${i}`]); if (alla && !S.bockar[id]) bocka(id, true);
+    vyStart();
+  });
   document.getElementById('oversikt').onclick = () => location.hash = 'oversikt';
 }
 function kort(l) {
   const klar = !!S.bockar[l.id], öva = l.typ !== 'uppgift';
   let extra = '';
+  if (l.delar && l.delar.length) {
+    const n = l.delar.filter((d, i) => S.bockar[`${l.id}#${i}`]).length;
+    extra += `<small>${n} av ${l.delar.length} delar klara</small><div class="delar">${l.delar.map((d, i) => `<button class="del${S.bockar[`${l.id}#${i}`] ? ' on' : ''}" data-del="${l.id}#${i}">${S.bockar[`${l.id}#${i}`] ? '✓ ' : ''}${esc(d)}</button>`).join('')}</div>`;
+  }
   if (öva && (l.typ !== 'karta' || EUROPA)) {
     const sp = spår(l).find(s => s.huvud), r = räkna(moment(l, sp.id));
     extra = `<small>Kan ${r.kan} av ${r.n} · ${senastText(r)}</small>${segHtml(r)}`;
   }
-  return `<div class="card${klar ? ' klar' : ''}"><button class="main${öva ? '' : ' static'}" ${öva ? `data-open="${l.id}"` : ''}>
+  const tag = öva ? 'button' : 'div';
+  return `<div class="card${klar ? ' klar' : ''}"><${tag} class="main${öva ? '' : ' static'}" ${öva ? `data-open="${l.id}"` : ''}>
     <span class="ic">${l.ikon || '📘'}</span><span class="t"><span class="amne">${esc(l.ämne)}</span><b>${esc(l.titel)}</b>
-    ${l.text ? `<small>${esc(l.text)}</small>` : ''}${l.datumText ? `<span class="tag">${esc(l.datumText)}</span>` : ''}${extra}</span></button>
-    <button class="chk" data-chk="${l.id}" aria-label="Markera som klar"><span class="box">${klar ? '✓' : ''}</span>${klar ? 'Klar' : 'Inte klar'}</button></div>`;
+    ${l.text ? `<small>${esc(l.text)}</small>` : ''}${l.datumText ? `<span class="tag">${esc(l.datumText)}</span>` : ''}${extra}</span></${tag}>
+    <button class="chk" data-chk="${l.id}" aria-label="Markera som klar"><span class="box">${klar ? '✓' : ''}</span>${klar ? 'Klar' : 'Inte klar'}</button></div>
+    ${loggRad(l)}`;
+}
+function loggRad(l) {
+  const mina = S.logg.filter(x => x.laxa === l.id), sist = mina[0];
+  const info = sist ? `Senast: ${esc(sist.text)}, ${dagAv(sist.ts) === idag() ? 'i dag' : veckodag(dagAv(sist.ts))}${mina.length > 1 ? ` · ${mina.length} gånger` : ''}` : 'Gjort något utanför appen? Skriv in det här.';
+  return `<div class="loggrad"><span>${info}</span><button class="link" data-logg="${l.id}">＋ Lägg till</button></div><div class="loggform" id="lf-${l.id}" hidden></div>`;
+}
+function öppnaLogg(id) {
+  const l = hittaLaxa(id), el = document.getElementById('lf-' + id); if (!el) return;
+  if (!el.hidden) { el.hidden = true; return; }
+  const val = LOGGVAL[l.typ] || LOGGVAL.uppgift; let vald = null, min = null;
+  el.innerHTML = `<p class="sub" style="margin:0 0 6px">Vad gjorde du?</p><div class="delar">${val.map(v => `<button class="del" data-v="${esc(v)}">${esc(v)}</button>`).join('')}</div>
+    <input class="txt" id="lt-${id}" placeholder="Eller skriv själv, t.ex. kapitel 15" maxlength="120">
+    <p class="sub" style="margin:8px 0 6px">Ungefär hur länge? (valfritt)</p><div class="delar">${[10, 20, 30, 45].map(m => `<button class="del" data-m="${m}">${m} min</button>`).join('')}</div>
+    <button class="btn primary" id="ls-${id}">Spara</button>`;
+  el.hidden = false;
+  el.querySelectorAll('[data-v]').forEach(b => b.onclick = () => { vald = vald === b.dataset.v ? null : b.dataset.v; el.querySelectorAll('[data-v]').forEach(o => o.classList.toggle('on', o.dataset.v === vald)); });
+  el.querySelectorAll('[data-m]').forEach(b => b.onclick = () => { min = min === +b.dataset.m ? null : +b.dataset.m; el.querySelectorAll('[data-m]').forEach(o => o.classList.toggle('on', +o.dataset.m === min)); });
+  document.getElementById('ls-' + id).onclick = () => {
+    const fri = document.getElementById('lt-' + id).value.trim();
+    const text = [vald, fri].filter(Boolean).join(': '); if (!text) return;
+    logga(id, text, min); vyStart();
+  };
 }
 
 function vyLaxa(id) {
@@ -570,7 +620,7 @@ async function vyOversikt() {
   stängKarta(); document.title = 'Översikt';
   if (alla().some(l => l.typ === 'karta')) await laddaEuropa();
   const dag = idag(); const dagar = []; for (let i = 13; i >= 0; i--) dagar.push(plusDagar(dag, -i));
-  const per = d => { const r = S.dagar.filter(x => x.dag === d); return { app: r.filter(x => x.kalla === 'app').reduce((s, x) => s + x.antal, 0), min: Math.round(r.reduce((s, x) => s + x.sekunder, 0) / 60), papper: r.filter(x => x.kalla === 'papper').reduce((s, x) => s + x.antal, 0) }; };
+  const per = d => { const r = S.dagar.filter(x => x.dag === d); return { logg: S.logg.filter(x => dagAv(x.ts) === d).length, app: r.filter(x => x.kalla === 'app').reduce((s, x) => s + x.antal, 0), min: Math.round(r.reduce((s, x) => s + x.sekunder, 0) / 60), papper: r.filter(x => x.kalla === 'papper').reduce((s, x) => s + x.antal, 0) }; };
   const rader = dagar.map(d => ({ d, ...per(d) }));
   const maxA = Math.max(1, ...rader.map(r => r.app + r.papper));
   const läxor = alla().filter(l => l.typ !== 'uppgift').sort((a, b) => (b.år - a.år) || (b.vecka - a.vecka)).slice(0, 6);
@@ -578,7 +628,8 @@ async function vyOversikt() {
     .sort((a, b) => (b.s.fel - b.s.ratt / 2) - (a.s.fel - a.s.ratt / 2)).slice(0, 10);
   $app.innerHTML = `<div class="page"><button class="back" id="tillbaka">← Alla läxor</button><h1>Översikt</h1>
     <p class="sub">Senaste två veckorna. Minuter räknas från tiden per svar, högst en minut per svar.</p>
-    <table class="list"><tr><th>Dag</th><th>Svar i appen</th><th>Min</th><th>På papper</th></tr>${rader.reverse().map(r => `<tr><td>${veckodag(r.d)}</td><td><div style="display:flex;align-items:center;gap:6px"><span style="display:inline-block;height:8px;border-radius:4px;background:var(--accent);width:${(r.app / maxA) * 100}px"></span>${r.app || ''}</div></td><td>${r.min || ''}</td><td>${r.papper || ''}</td></tr>`).join('')}</table>
+    <table class="list"><tr><th>Dag</th><th>Svar i appen</th><th>Min</th><th>Utanför appen</th></tr>${rader.reverse().map(r => `<tr><td>${veckodag(r.d)}</td><td><div style="display:flex;align-items:center;gap:6px"><span style="display:inline-block;height:8px;border-radius:4px;background:var(--accent);width:${(r.app / maxA) * 100}px"></span>${r.app || ''}</div></td><td>${r.min || ''}</td><td>${(r.papper + r.logg) || ''}</td></tr>`).join('')}</table>
+    ${S.logg.length ? `<h2>Gjort utanför appen</h2><table class="list">${S.logg.slice(0, 15).map(x => { const l = hittaLaxa(x.laxa); return `<tr><td style="white-space:nowrap">${veckodag(dagAv(x.ts))}</td><td>${esc(l ? l.titel : x.laxa)}<br><span class="sub">${esc(x.text)}${x.minuter ? `, ${x.minuter} min` : ''}</span></td></tr>`; }).join('')}</table>` : ''}
     <h2>Läget per läxa</h2>${LEGEND}${läxor.map(l => spår(l).map(sp => { const r = räkna(moment(l, sp.id)); return `<p style="margin:12px 0 0"><b>${esc(l.titel)}</b>${spår(l).length > 1 ? `, ${esc(sp.namn.toLowerCase())}` : ''} <span class="sub">v. ${l.vecka}</span><br><span class="sub">Kan ${r.kan} · lär sig ${r.lar} · inte börjat ${r.ej} · ${senastText(r)}</span></p>${segHtml(r)}`; }).join('')).join('')}
     ${svåra.length ? `<h2>Svårast just nu</h2><table class="list"><tr><th>Ord eller land</th><th>Rätt</th><th>Fel</th></tr>${svåra.map(o => `<tr><td>${esc(o.x.namn)}</td><td>${o.s.ratt}</td><td>${o.s.fel}</td></tr>`).join('')}</table>` : ''}
     <h2>Testa appen</h2><p class="sub">Prova allt som Eskil ser utan att det påverkar hans statistik eller framsteg.</p>
@@ -601,6 +652,6 @@ window.addEventListener('hashchange', route);
   route();
   if (!NYCKEL) return;
   await Promise.all([hamta(), alla().some(l => l.typ === 'karta') ? laddaEuropa() : null]);
-  if (ko.forsok.length || Object.keys(ko.status).length || Object.keys(ko.bockar).length) { await flush(); await hamta(); }
+  if (ko.forsok.length || Object.keys(ko.status).length || Object.keys(ko.bockar).length || ko.logg.length) { await flush(); await hamta(); }
   if (!P) route();
 })();
